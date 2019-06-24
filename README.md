@@ -5,7 +5,7 @@
 - To install all packages run: `cinst CONFIGFILELOCATION -y`
 - For listing all Chocolatey installed programs: `clist --local-only`
 ## Cmder
-Contains the following:
+The `CmderConfig.xml` file can be imported into the Cmder application and contains the following:
 - Preferred console settings
 - Git aliases
 - Chocolatey aliases
