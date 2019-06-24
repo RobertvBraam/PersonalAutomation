@@ -4,3 +4,9 @@
 - Download the Chocolatey.config file
 - To install all packages run: `cinst CONFIGFILELOCATION -y`
 - For listing all Chocolatey installed programs: `clist --local-only`
+## Cmder
+Contains the following:
+- Preferred console settings
+- Git aliases
+- Chocolatey aliases
+- Some other handy personal aliases
