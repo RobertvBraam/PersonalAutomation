@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <key name="Software">
 	<key name="ConEmu">
-		<key name=".Vanilla" modified="2019-06-24 21:45:16" build="180626">
+		<key name=".Vanilla" modified="2019-11-06 18:32:34" build="180626">
 			<value name="Language" type="string" data="en"/>
 			<value name="StartType" type="hex" data="02"/>
 			<value name="CmdLine" type="string" data=""/>
 			<value name="StartTasksFile" type="string" data=""/>
-			<value name="StartTasksName" type="string" data="{PowerShell::PowerShell as Admin}"/>
+			<value name="StartTasksName" type="string" data="{cmd::Cmder as Admin}"/>
 			<value name="StartFarFolders" type="hex" data="00"/>
 			<value name="StartFarEditors" type="hex" data="00"/>
 			<value name="StartCreateDelay" type="ulong" data="100"/>
@@ -40,8 +40,8 @@
 			<value name="ClipboardBashMargin" type="hex" data="00"/>
 			<value name="ClipboardTrimTrailing" type="hex" data="02"/>
 			<value name="ClipboardEOL" type="hex" data="00"/>
-			<value name="ClipboardArrowStart" type="hex" data="00"/>
-			<value name="ClipboardAllLines" type="hex" data="01"/>
+			<value name="ClipboardArrowStart" type="hex" data="01"/>
+			<value name="ClipboardAllLines" type="hex" data="03"/>
 			<value name="ClipboardAllLinesPosix" type="hex" data="00"/>
 			<value name="ClipboardFirstLine" type="hex" data="01"/>
 			<value name="ClipboardFirstLinePosix" type="hex" data="00"/>
@@ -135,8 +135,8 @@
 			<value name="Cascaded" type="hex" data="01"/>
 			<value name="IntegralSize" type="hex" data="00"/>
 			<value name="WindowMode" type="dword" data="00000520"/>
-			<value name="ConWnd X" type="long" data="521"/>
-			<value name="ConWnd Y" type="long" data="500"/>
+			<value name="ConWnd X" type="long" data="14"/>
+			<value name="ConWnd Y" type="long" data="0"/>
 			<value name="LastMonitor" type="string" data="0,0,1920,1040"/>
 			<value name="ConWnd Width" type="dword" data="00000078"/>
 			<value name="ConWnd Height" type="dword" data="0000001e"/>
@@ -158,7 +158,7 @@
 			<value name="ConsoleFontWidth" type="long" data="3"/>
 			<value name="ConsoleFontHeight" type="long" data="5"/>
 			<value name="DynamicBufferHeight" type="hex" data="01"/>
-			<value name="DefaultBufferHeight" type="long" data="1000"/>
+			<value name="DefaultBufferHeight" type="long" data="32766"/>
 			<value name="AutoBufferHeight" type="hex" data="01"/>
 			<value name="UseScrollLock" type="hex" data="01"/>
 			<value name="ComSpec.Type" type="hex" data="00"/>
@@ -173,6 +173,9 @@
 				<line data="set PATH=%ConEmuBaseDir%\Scripts;%PATH%"/>
 				<line data="alias ..=cd .."/>
 				<line data="alias proj=cd C:\Users\robert\Projects"/>
+				<line data="alias ps=powershell.exe -noexit -file $*"/>
+				<line data='alias sln=powershell -command "Get-ChildItem *.sln -r |  % { start $_ }"'/>
+				<line data="alias codef = code -n ."/>
 				<line data="#Git"/>
 				<line data="alias git l=git log --pretty=oneline -n 120 --graph --abbrev-commit"/>
 				<line data="alias git s=git status"/>
@@ -194,9 +197,12 @@
 				<line data="alias git fm=!f() { git log --pretty=format:'%C(yellow)%h  %Cblue%ad  %Creset%s%Cgreen  [%cn] %Cred%d' --decorate --date=short --grep=$1; }; f"/>
 				<line data="alias git dm=!git branch --merged | grep -v '\*' | xargs -n 1 git branch -d"/>
 				<line data="alias git contr=git shortlog --summary"/>
+				<line data="alias git pu=git push -u origin HEAD"/>
 				<line data="#Chocolatey"/>
 				<line data="alias clocal=clist --local-only"/>
 				<line data="alias cversion=clist --all-versions $*"/>
+				<line data="alias cupa=cup all"/>
+				<line data=" "/>
 			</value>
 			<value name="CTS.Intelligent" type="hex" data="01"/>
 			<value name="CTS.IntelligentExceptions" type="string" data="far|vim.exe"/>
