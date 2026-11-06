@@ -1,0 +1,67 @@
+# Cmder Aliases
+# Migrated from CmderConfig.xml > EnvironmentSet
+#
+# These are Cmder/cmd.exe aliases (user-aliases.cmd format).
+# For other shells, see the sections below.
+#
+# Cmder location: %CMDER_ROOT%\config\user-aliases.cmd
+# ============================================================================
+
+; ----- Personal -----
+..=cd ..
+proj=cd C:\Users\robert\Projects
+ps=powershell.exe -noexit -file $*
+sln=powershell -command "Get-ChildItem *.sln -r | % { start $_ }"
+codef=code -n .
+
+; ----- Chocolatey -----
+clocal=clist --local-only
+cversion=clist --all-versions $*
+cupa=cup all
+cinstv=cinst $1 -m --version=$2
+
+
+# ============================================================================
+# Git Aliases
+# For ~/.gitconfig — paste under [alias] section
+# ============================================================================
+#
+# [alias]
+#   l        = log --pretty=oneline -n 120 --graph --abbrev-commit
+#   s        = status
+#   p        = !git pull && git submodule foreach git pull origin master
+#   c        = clone --recursive
+#   ca       = !git add -A && git commit -m
+#   go       = !f() { git checkout -b "$1" 2>/dev/null || git checkout "$1"; }; f
+#   tags     = tag -l
+#   branches = branch -a
+#   remotes  = remote -v
+#   aliases  = config --get-regexp alias
+#   amend    = commit --amend --reuse-message=HEAD
+#   credit   = !f() { git commit --amend --author "$1 <$2>" -C HEAD; }; f
+#   reb      = !r() { git rebase -i HEAD~$1; }; r
+#   retag    = !r() { git tag -d $1 && git push origin :refs/tags/$1 && git tag $1; }; r
+#   fb       = !f() { git branch -a --contains $1; }; f
+#   ft       = !f() { git describe --always --contains $1; }; f
+#   fc       = !f() { git log --pretty=format:'%C(yellow)%h  %Cblue%ad  %Creset%s%Cgreen  [%cn] %Cred%d' --decorate --date=short -S$1; }; f
+#   fm       = !f() { git log --pretty=format:'%C(yellow)%h  %Cblue%ad  %Creset%s%Cgreen  [%cn] %Cred%d' --decorate --date=short --grep=$1; }; f
+#   dm       = !git branch --merged | grep -v '\*' | xargs -n 1 git branch -d
+#   contr    = shortlog --summary
+#   pu       = push -u origin HEAD
+
+
+# ============================================================================
+# PowerShell Equivalents
+# For $PROFILE (Microsoft.PowerShell_profile.ps1)
+# ============================================================================
+#
+# function proj   { Set-Location C:\Users\robert\Projects }
+# function codef  { code -n . }
+# function sln    { Get-ChildItem *.sln -Recurse | ForEach-Object { Start-Process $_ } }
+# Set-Alias ..    { Set-Location .. }   # or: function .. { Set-Location .. }
+#
+# Chocolatey
+# function clocal   { clist --local-only }
+# function cversion { clist --all-versions $args }
+# function cupa     { cup all }
+# function cinstv   { cinst $args[0] -m --version=$args[1] }
