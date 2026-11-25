@@ -12,3 +12,5 @@ The `CmderConfig.xml` file can be imported into the Cmder application and contai
 - Git aliases
 - Chocolatey aliases
 - Some other handy personal aliases
+## Home network
+Scripts for the home router (Netgear R7800 on OpenWrt: NordVPN with a kill switch, DNS forced through the Pi-hole) and the Pi-hole. See [home-network/README.md](home-network/README.md) for daily use and how to set it up again.
