@@ -1,0 +1,89 @@
+#!/bin/sh
+set -eu
+
+usage() {
+	cat >&2 <<'USAGE'
+usage:
+  direct-sites list
+  direct-sites add <domain>...
+  direct-sites remove <domain>...
+A domain covers its subdomains: reddit.com also sends www.reddit.com around the VPN.
+USAGE
+	exit 1
+}
+
+fail() {
+	echo "$*" >&2
+	exit 1
+}
+
+router_ip() {
+	ip route show default | awk '{ print $3; exit }'
+}
+
+normalize() {
+	printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's|^[a-z]*://||; s|/.*||'
+}
+
+valid_domain() {
+	printf '%s\n' "$1" | grep -qE '^[a-z0-9-]+(\.[a-z0-9-]+)+$'
+}
+
+current_sites() {
+	pihole-FTL --config misc.dnsmasq_lines | grep -o "server=/[^] \",]*/$ROUTER" | head -n 1 | sed "s|^server=/||; s|/$ROUTER\$||" | tr '/' '\n'
+}
+
+save_sites() {
+	# TODO: this rewrites all of misc.dnsmasq_lines, so any other custom dnsmasq line set there by hand is lost. Keeping the other entries would mean parsing the TOML array FTL prints.
+	sites=$(sort -u | grep -v '^$' | tr '\n' '/')
+	if [ -n "$sites" ]; then
+		pihole-FTL --config misc.dnsmasq_lines "[\"server=/$sites$ROUTER\"]" >/dev/null
+	else
+		pihole-FTL --config misc.dnsmasq_lines '[]' >/dev/null
+	fi
+}
+
+list_sites() {
+	sites=$(current_sites)
+	if [ -z "$sites" ]; then
+		echo "No sites skip the VPN."
+	else
+		echo "These sites skip the VPN (subdomains included):"
+		printf '  %s\n' $sites
+	fi
+}
+
+add_sites() {
+	[ $# -gt 0 ] || usage
+	new=''
+	for arg in "$@"; do
+		site=$(normalize "$arg")
+		valid_domain "$site" || fail "Not a domain name: $arg"
+		new="$new$site
+"
+	done
+	{ current_sites; printf '%s' "$new"; } | save_sites
+}
+
+remove_sites() {
+	[ $# -gt 0 ] || usage
+	sites=$(current_sites)
+	for arg in "$@"; do
+		site=$(normalize "$arg")
+		printf '%s\n' "$sites" | grep -Fqx "$site" || fail "$site is not in the list."
+		sites=$(printf '%s\n' "$sites" | grep -Fvx "$site" || true)
+	done
+	printf '%s\n' "$sites" | save_sites
+}
+
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
+
+ROUTER=$(router_ip)
+[ -n "$ROUTER" ] || fail "This machine has no default route, so the router's address is unknown."
+
+case "${1:-}" in
+	list) list_sites ;;
+	add) shift; add_sites "$@"; list_sites ;;
+	remove) shift; remove_sites "$@"; list_sites ;;
+	*) usage ;;
+esac
