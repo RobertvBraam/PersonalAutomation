@@ -37,9 +37,14 @@ variable "location" {
   default     = "nbg1"
 }
 
-resource "hcloud_ssh_key" "admin" {
-  name       = "github-runner-admin"
-  public_key = trimspace(file("${path.module}/../admin.pub"))
+# Hetzner refuses the same public key twice in one project, and another stack
+# may already have uploaded the admin key, so it is found by its content here
+# rather than created.
+data "hcloud_ssh_keys" "uploaded" {}
+
+locals {
+  admin_public_key = trimspace(file("${path.module}/../nixos/admin.pub"))
+  admin_key_ids    = [for key in data.hcloud_ssh_keys.uploaded.ssh_keys : tostring(key.id) if startswith(key.public_key, local.admin_public_key)]
 }
 
 # Runners only dial out. Docker publishes container ports past the host
@@ -67,14 +72,19 @@ resource "hcloud_server" "runner" {
   server_type  = var.server_type
   location     = var.location
   image        = "ubuntu-24.04"
-  ssh_keys     = [hcloud_ssh_key.admin.id]
+  ssh_keys     = local.admin_key_ids
   firewall_ids = [hcloud_firewall.runner.id]
 
-  # The image is only what the NixOS installer boots from. Hetzner keeps
-  # reporting it after NixOS has replaced it, and a new default must never
-  # rebuild a machine that is running jobs.
+  # The image and the key are only what the NixOS installer boots from and logs
+  # in with. Hetzner keeps reporting both after NixOS has replaced them, and a
+  # change to either must never rebuild a machine that is running jobs.
   lifecycle {
     ignore_changes = [image, ssh_keys]
+
+    precondition {
+      condition     = length(local.admin_key_ids) == 1
+      error_message = "The key in ../nixos/admin.pub is not uploaded to this Hetzner project. Add it in the Hetzner Console under Security, SSH keys, then apply again."
+    }
   }
 }
 
