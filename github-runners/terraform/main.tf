@@ -92,6 +92,27 @@ resource "hcloud_server" "runner" {
   }
 }
 
+# The one disk a reinstall or a replaced server leaves alone. It holds what must
+# outlive the system, which today is the runners' GitHub token (../README.md).
+# NixOS formats it once and mounts it. A volume cannot change location, and
+# Terraform refuses to destroy this one.
+resource "hcloud_volume" "persist" {
+  name              = "github-runner-persist"
+  size              = 10
+  location          = var.location
+  delete_protection = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "hcloud_volume_attachment" "persist" {
+  volume_id = hcloud_volume.persist.id
+  server_id = hcloud_server.runner.id
+  automount = false
+}
+
 output "ipv4" {
   description = "Public IPv4 address of the runner server."
   value       = hcloud_server.runner.ipv4_address
