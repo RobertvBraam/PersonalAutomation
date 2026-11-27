@@ -92,7 +92,8 @@ let
 
   # One runner. It ends with its job and starts again for the next one. A
   # changed definition is not applied under a running job: it takes effect when
-  # the runner starts again.
+  # the runner starts again. A runner that is stopped ends with code 143, which
+  # is not a failure.
   runnerService =
     runner:
     lib.nameValuePair (unitOf runner) (
@@ -120,6 +121,7 @@ let
             ExecStart = run "slot";
             Restart = "on-success";
             RestartSec = 2;
+            SuccessExitStatus = 143;
           };
         }
       ]
@@ -232,12 +234,18 @@ in
       root.openssh.authorizedKeys.keyFiles = [ ./admin.pub ];
     };
 
-  # TODO: a daemon also forwards every port its containers publish to the
-  # server's own 127.0.0.1 (Docker's default without root). Two daemons that
-  # pick the same free port there may collide, which is not tried. A daemon
-  # that forwards nothing to the server would close that, once it is shown
-  # that a job still reaches its published ports.
   virtualisation.docker.rootless.enable = true;
+
+  # Left to its defaults, a daemon without root stays in the server's own
+  # network and so does every runner container on it: two runners then share
+  # one 127.0.0.1, and a job reaches what listens on the server. With the
+  # detached mode off each daemon gets a network of its own. With no port
+  # driver it forwards nothing to the server: a port a job publishes exists in
+  # its runner's network only, so two runners can publish the same one.
+  systemd.user.services.docker.environment = {
+    DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS = "false";
+    DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER = "none";
+  };
 
   # What NixOS loads for a root Docker daemon. This machine has none, and a
   # daemon without root cannot be counted on to get them loaded itself.

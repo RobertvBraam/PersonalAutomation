@@ -61,6 +61,13 @@ wait_for_daemon() {
   done
 }
 
+# Downloads the runner image when the daemon does not have it, which is the
+# first job after every night. Before the registration, so GitHub never lists a
+# runner that is still downloading.
+pull_image() {
+  docker image inspect "$RUNNER_IMAGE" >/dev/null 2>&1 || docker pull --quiet "$RUNNER_IMAGE" >/dev/null || fail "could not download $RUNNER_IMAGE. Check the tag (runnerImage in configuration.nix) and that this machine reaches Docker Hub."
+}
+
 # Removes the registration a run that died left under this runner's name.
 # After a finished job GitHub removes it by itself.
 forget_registration() {
@@ -85,12 +92,15 @@ register() {
 # The container ends with its job, and systemd then starts this again. What the
 # job before left is removed first: its containers, since everything on this
 # daemon is this runner's, and its workspace, which sits on a volume next to
-# the caches that are meant to stay.
+# the caches that are meant to stay. RUNNER_MANUALLY_TRAP_SIG makes the runner
+# end on a stop signal: without it the first process of the container ignores
+# the signal, and stopping the unit hangs until systemd kills it.
 run_one_job() {
   local volume mounts=() work="/_work/$RUNNER_NAME"
   use_daemon_of "$RUNNER_USER"
   wait_for_daemon
   remove_containers
+  pull_image
   forget_registration
   register "$work"
   echo "$runner_id $REPOSITORY $RUNNER_USER" >"$RUNTIME_DIRECTORY/$RUNNER_NAME"
@@ -99,7 +109,7 @@ run_one_job() {
   done
   unset GH_TOKEN RUNNER_ACCESS_TOKEN
   # shellcheck disable=SC2016
-  exec docker run --rm --name "$RUNNER_NAME" --network host --volume "$socket:/var/run/docker.sock" "${mounts[@]}" --env JITCONFIG --env RUNNER_ALLOW_RUNASROOT=1 --env "WORK=$work" --entrypoint /bin/sh "$RUNNER_IMAGE" -c 'rm -rf "$WORK" && exec /actions-runner/run.sh --jitconfig "$JITCONFIG"'
+  exec docker run --rm --name "$RUNNER_NAME" --network host --volume "$socket:/var/run/docker.sock" "${mounts[@]}" --env JITCONFIG --env RUNNER_ALLOW_RUNASROOT=1 --env RUNNER_MANUALLY_TRAP_SIG=1 --env "WORK=$work" --entrypoint /bin/sh "$RUNNER_IMAGE" -c 'rm -rf "$WORK" && exec /actions-runner/run.sh --jitconfig "$JITCONFIG"'
 }
 
 # Sends one span to SigNoz. table-tab's alert rules read these spans
