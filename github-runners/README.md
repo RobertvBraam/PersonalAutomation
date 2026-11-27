@@ -155,6 +155,24 @@ gh variable set RUNNER_LABEL --repo RobertvBraam/table-tab --body tabletab
 gh variable set GATE_RUNNER_LABEL --repo RobertvBraam/table-tab --body tabletab
 ```
 
+### Reinstalling the server that is running
+
+Step 3 alone, with a command before it and one after. The token stays on the volume, so the fresh system starts its runners by itself, about a minute after its first boot. Count on ten minutes without the server's runners.
+
+Before step 3, let running jobs finish and stop the runners. This is the nightly clean start without its reboot, and it waits up to two hours for jobs:
+
+```powershell
+ssh github-runner "systemctl stop tabletab-runners.timer && mkdir -p /run/systemd/system/tabletab-runners-maintenance.service.d && printf '[Unit]\nSuccessAction=none\n' > /run/systemd/system/tabletab-runners-maintenance.service.d/no-reboot.conf && systemctl daemon-reload && systemctl start tabletab-runners-maintenance"
+```
+
+If you do not reinstall after all, reboot the server: that brings the timer and the nightly reboot back.
+
+After step 3 the server has a new host key, so forget the old one before the first login, with the server's address:
+
+```powershell
+ssh-keygen -R <address>
+```
+
 ## Good to know
 
 - **Whoever can push to table-tab's `master` controls this server.** The hourly run executes that repository's `scripts/runner.sh` as root. That is the price of following the compose file without a copy; the jobs themselves already run whatever a workflow says.
