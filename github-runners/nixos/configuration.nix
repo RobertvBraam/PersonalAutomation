@@ -1,4 +1,9 @@
-{ modulesPath, pkgs, ... }:
+{
+  lib,
+  modulesPath,
+  pkgs,
+  ...
+}:
 
 let
   repository = "RobertvBraam/table-tab";
@@ -13,11 +18,13 @@ let
 
   nixosRelease = "26.05";
 
-  # The token file holds one line, RUNNER_ACCESS_TOKEN=<token>, and is copied to
-  # the machine by hand (../README.md): this repository is public.
-  # TODO: a token in a root-only file is the whole secret handling. sops-nix or
-  # agenix would keep it encrypted in the repository and survive a reinstall.
-  tokenFile = "/var/lib/tabletab-runners/token.env";
+  # Where the volume from ../terraform/main.tf is mounted: the one disk a
+  # reinstall or a new server leaves alone.
+  persist = "/persist";
+
+  # One line, RUNNER_ACCESS_TOKEN=<token>, written to the volume once
+  # (../README.md) and never to this repository, which is public.
+  tokenFile = "${persist}/token.env";
 
   # The two modes of tabletab-runners.sh share everything but their trigger.
   runnerService = mode: {
@@ -27,6 +34,7 @@ let
       "network-online.target"
     ];
     wants = [ "network-online.target" ];
+    unitConfig.RequiresMountsFor = persist;
     path = with pkgs; [
       bash
       docker
@@ -101,6 +109,26 @@ in
     };
   };
 
+  # The volume gets a name that does not carry its Hetzner id, so a replaced
+  # volume needs no change here. An empty one is formatted on its first mount.
+  # Without the volume the machine still boots and takes SSH, and the runner
+  # services refuse to start.
+  # TODO: the rule matches any Hetzner volume, which is right while the server
+  # has one. A second volume needs the match narrowed to this one's id
+  # (ID_SCSI_SERIAL).
+  services.udev.extraRules = ''
+    SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_VENDOR}=="HC", ENV{ID_MODEL}=="Volume", SYMLINK+="persist-volume"
+  '';
+  fileSystems.${persist} = {
+    device = "/dev/persist-volume";
+    fsType = "ext4";
+    autoFormat = true;
+    options = [
+      "nofail"
+      "x-systemd.device-timeout=30s"
+    ];
+  };
+
   services.openssh = {
     enable = true;
     settings = {
@@ -139,14 +167,20 @@ in
     options = "--delete-older-than 14d";
   };
 
-  systemd.services.tabletab-runners = runnerService "sync" // {
-    description = "TableTab GitHub Actions runners, following table-tab's master";
-    wantedBy = [ "multi-user.target" ];
-    startAt = "hourly";
-  };
+  systemd.services.tabletab-runners = lib.mkMerge [
+    (runnerService "sync")
+    {
+      description = "TableTab GitHub Actions runners, following table-tab's master";
+      wantedBy = [ "multi-user.target" ];
+      startAt = "hourly";
+    }
+  ];
 
-  systemd.services.tabletab-runners-maintenance = runnerService "maintain" // {
-    description = "Nightly clean start of the TableTab runners: drain, wipe, reboot";
-    unitConfig.SuccessAction = "reboot";
-  };
+  systemd.services.tabletab-runners-maintenance = lib.mkMerge [
+    (runnerService "maintain")
+    {
+      description = "Nightly clean start of the TableTab runners: drain, wipe, reboot";
+      unitConfig.SuccessAction = "reboot";
+    }
+  ];
 }
