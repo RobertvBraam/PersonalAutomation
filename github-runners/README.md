@@ -5,7 +5,8 @@ One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [Tabl
 | Part | What it is |
 |---|---|
 | Server | `github-runner`, a CX33 (4 vCPU, 8 GB, 80 GB) in Nuremberg, EUR 8.49 a month. Find its address with `terraform output` (below) |
-| `terraform/` | Claims the server: a stock image, the admin SSH key and a firewall that lets only SSH and ping in. State is in Azure Storage |
+| Volume | `github-runner-persist`, 10 GB, EUR 0.57 a month, mounted at `/persist`. The one disk a reinstall or a new server leaves alone. It holds the runners' GitHub token |
+| `terraform/` | Claims the server and the volume: a stock image, the admin SSH key and a firewall that lets only SSH and ping in. State is in Azure Storage |
 | `nixos/` | The system that replaces the stock image: `configuration.nix`, and the script its two runner services run |
 | Runners | Two, labelled `tabletab`, next to whatever runs on a laptop. GitHub gives a job to any idle one |
 
@@ -38,6 +39,7 @@ Host github-runner
 | What the last runs printed | `ssh github-runner "journalctl -u tabletab-runners -n 80 --no-pager"` |
 | How last night went | `ssh github-runner "journalctl -u nixos-upgrade -u tabletab-runners-maintenance --since yesterday --no-pager"` |
 | The containers | `ssh github-runner "docker ps"` |
+| Is the volume mounted | `ssh github-runner "findmnt /persist"` |
 | What a runner is doing | `ssh github-runner "docker compose -p tabletab-runner logs --tail 50 runner"` |
 | Run the hourly check now | `ssh github-runner "systemctl start tabletab-runners"` |
 | Clean start now: wait for jobs, wipe, reboot | `ssh github-runner "systemctl start --no-block tabletab-runners-maintenance"` |
@@ -50,7 +52,7 @@ What GitHub sees, from the laptop:
 gh api repos/RobertvBraam/table-tab/actions/runners --jq ".runners[] | [.name, .status, (.busy|tostring), (.labels | map(.name) | tostring)] | @tsv"
 ```
 
-A server runner that is online without the `tabletab` label is out of rotation on purpose: at night, or for a few seconds while the hourly run checks for a running job. When jobs stay queued, start with `systemctl status tabletab-runners`: a failed run names what is wrong, and an expired token is the usual cause.
+A server runner that is online without the `tabletab` label is out of rotation on purpose: at night, or for a few seconds while the hourly run checks for a running job. When jobs stay queued, start with `systemctl status tabletab-runners`: a failed run names what is wrong, and an expired token is the usual cause. "Dependency failed" means the volume is not mounted.
 
 ## Changing it
 
@@ -61,7 +63,8 @@ A server runner that is online without the `tabletab` label is out of rotation o
 | When the night starts | `dates` under `system.autoUpgrade` in `nixos/configuration.nix` |
 | Which repository | `repository` in `nixos/configuration.nix`. It must have table-tab's `scripts/runner.sh` |
 | The NixOS release | `nixosRelease` in `nixos/configuration.nix` and the `nixpkgs` input in `nixos/flake.nix` |
-| Server size or location | `server_type` and `location` in `terraform/main.tf`. A new location replaces the server |
+| Server size | `server_type` in `terraform/main.tf` |
+| Location | `location` in `terraform/main.tf`. It replaces the server, and the volume cannot follow: Terraform refuses until `prevent_destroy` and `delete_protection` are off the volume, and the new volume needs step 4 again |
 
 Never attach this server to a public repository: a pull request from a stranger would then run its code here.
 
@@ -94,13 +97,15 @@ terraform -chdir=github-runners/terraform init
 terraform -chdir=github-runners/terraform apply
 ```
 
-CX stock comes and goes per location. When the apply fails with `resource_unavailable`, try the others: `-var location=fsn1` or `-var location=hel1`, then set that location as the default in `main.tf`, because a later apply with another location replaces the server.
+The apply creates whatever is missing: the server, the volume, or both. A server that was lost comes back next to the volume that is still there.
+
+CX stock comes and goes per location. When the apply fails with `resource_unavailable` and no volume exists yet, try the others: `-var location=fsn1` or `-var location=hel1`, then set that location as the default in `main.tf`, because a later apply with another location replaces the server. Once the volume exists, the server has to come back in the volume's location.
 
 The admin key (`nixos/admin.pub`, the public half of `C:\Users\Robert\.ssh\hetzner_ed25519`) must already be uploaded to the Hetzner project. TableTab's Terraform uploads it as `signoz-admin-prod`; in an empty project, add it by hand under Security, SSH keys.
 
 ### 3. Install NixOS
 
-[nixos-anywhere](https://github.com/nix-community/nixos-anywhere) boots an installer on the server, partitions the disk and installs the system from `nixos/`. **It erases the server's disk.** It runs from a Nix container and builds on the server itself.
+[nixos-anywhere](https://github.com/nix-community/nixos-anywhere) boots an installer on the server, partitions the disk and installs the system from `nixos/`. **It erases the server's system disk** (`/dev/sda`). The volume is not part of the layout it writes, so the token on it stays. It runs from a Nix container and builds on the server itself.
 
 The installer gets a throwaway key, so the real one never enters a container that runs downloaded code. Replace `<address>` with the server's address in the second and third command:
 
@@ -124,17 +129,19 @@ Remove-Item C:\Users\Robert\.ssh\runner-install-throwaway, C:\Users\Robert\.ssh\
 
 ### 4. Give it the GitHub token
 
-The `tr` keeps only the characters a token line can hold, which drops the byte-order mark and the Windows line ending that PowerShell adds to a pipe.
+Only for a new volume or a new token. The token lives on the volume, so a reinstalled or replaced server finds it there and starts its runners by itself.
+
+The `mountpoint` check stops the command when the volume is not mounted, so the token cannot land on the system disk. The `tr` keeps only the characters a token line can hold, which drops the byte-order mark and the Windows line ending that PowerShell adds to a pipe.
 
 ```powershell
-"RUNNER_ACCESS_TOKEN=$([Environment]::GetEnvironmentVariable('TABLETAB_RUNNER_TOKEN', 'User'))" | ssh github-runner "umask 077; mkdir -p /var/lib/tabletab-runners; tr -cd 'A-Za-z0-9_=\n' > /var/lib/tabletab-runners/token.env"
+"RUNNER_ACCESS_TOKEN=$([Environment]::GetEnvironmentVariable('TABLETAB_RUNNER_TOKEN', 'User'))" | ssh github-runner "mountpoint /persist && umask 077 && tr -cd 'A-Za-z0-9_=\n' > /persist/token.env"
 ```
 
 ```powershell
 ssh github-runner "systemctl start tabletab-runners"
 ```
 
-The first run takes about a minute: it pulls the runner image and the Playwright image. It ends without an error once GitHub sees the runners online. Replacing an expired token is this same step.
+On a fresh server the first run takes about a minute: it pulls the runner image and the Playwright image. It ends without an error once GitHub sees the runners online.
 
 ### 5. Route jobs to it
 
@@ -155,11 +162,13 @@ gh variable set GATE_RUNNER_LABEL --repo RobertvBraam/table-tab --body tabletab
 - **Jobs cannot use Docker**, exactly as on a laptop runner: the runner is a container without the Docker socket.
 - **A job longer than two hours blocks that night's clean start**, and the server takes no new job while the night waits for it. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
 - **Only IPv4 is configured.** The runners dial out and nothing dials in but SSH.
+- **The token is plain text on the volume**, readable by root only. Whoever has the Hetzner project can read it too, by attaching the volume to another server.
+- **Without the volume the server still boots and takes SSH**, and the runner services refuse to start. Nothing else is kept on the volume: the checkout and the caches are wiped every night on purpose.
 
 ## Known shortcuts
 
 `git grep -n "TODO: " -- github-runners` lists them where they live:
 
-- The GitHub token is a root-only file on the server, copied by hand. A reinstall needs step 4 again.
+- The system finds the volume as "the Hetzner volume", which is right while the server has one. A second volume needs the rule in `nixos/configuration.nix` narrowed to this one's id.
 - The hourly run knows which three paths in table-tab the runners are built from. If `scripts/runner.sh` starts reading a fourth, the copy here has to follow.
 - After taking the runners out of rotation, the script waits 15 seconds before it trusts that no job is on its way. That number is a guess.
