@@ -7,7 +7,51 @@ let
   # gate alone starts a backend, a dev server and four browsers.
   runnerCount = 2;
 
+  # How long the nightly maintenance waits for running jobs before it gives up
+  # for that night. Longer than a PR gate, shorter than the weekly mutation run.
+  drainPatienceMinutes = 120;
+
   nixosRelease = "26.05";
+
+  # The token file holds one line, RUNNER_ACCESS_TOKEN=<token>, and is copied to
+  # the machine by hand (../README.md): this repository is public.
+  # TODO: a token in a root-only file is the whole secret handling. sops-nix or
+  # agenix would keep it encrypted in the repository and survive a reinstall.
+  tokenFile = "/var/lib/tabletab-runners/token.env";
+
+  # The two modes of tabletab-runners.sh share everything but their trigger.
+  runnerService = mode: {
+    requires = [ "docker.service" ];
+    after = [
+      "docker.service"
+      "network-online.target"
+    ];
+    wants = [ "network-online.target" ];
+    path = with pkgs; [
+      bash
+      docker
+      gh
+      git
+      util-linux
+    ];
+    environment = {
+      HOME = "/var/lib/tabletab-runners";
+      REPOSITORY = repository;
+      RUNNER_COUNT = toString runnerCount;
+      DRAIN_PATIENCE_MINUTES = toString drainPatienceMinutes;
+      RUNNER_AUTO_LABEL = "false";
+      GIT_CONFIG_COUNT = "1";
+      GIT_CONFIG_KEY_0 = "credential.helper";
+      GIT_CONFIG_VALUE_0 = "!gh auth git-credential";
+    };
+    serviceConfig = {
+      Type = "oneshot";
+      StateDirectory = "tabletab-runners";
+      StateDirectoryMode = "0700";
+      EnvironmentFile = tokenFile;
+      ExecStart = "${pkgs.bash}/bin/bash ${./tabletab-runners.sh} ${mode}";
+    };
+  };
 in
 {
   imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];
@@ -71,15 +115,16 @@ in
   virtualisation.docker.enable = true;
   zramSwap.enable = true;
 
-  # Every night (03:00 in Japan) the machine rebuilds itself from this
-  # repository's master on the newest commit of the NixOS release branch, so a
-  # merged change and security patches both arrive without anyone logging in.
-  # TODO: a new kernel only takes effect after a reboot, and nothing reboots the
-  # machine because that would abandon running jobs. Reboot by hand when it is
-  # idle; allowReboot with a window would do it once jobs can be drained first.
+  # The night, 04:00 in Japan. First the newest system is built from this
+  # repository's master on the newest commit of the NixOS release branch and
+  # made the one to boot ("boot", so nothing changes under a running job). When
+  # that worked, the maintenance lets the running jobs finish, removes every
+  # container, image, volume and checkout, and reboots into the new system. A
+  # build that fails leaves the machine as it was, with no reboot.
   system.autoUpgrade = {
     enable = true;
-    dates = "18:00";
+    operation = "boot";
+    dates = "*-*-* 04:00:00 Asia/Tokyo";
     flake = "github:RobertvBraam/PersonalAutomation?dir=github-runners/nixos#github-runner";
     flags = [
       "--override-input"
@@ -87,6 +132,7 @@ in
       "github:NixOS/nixpkgs/nixos-${nixosRelease}"
     ];
   };
+  systemd.services.nixos-upgrade.onSuccess = [ "tabletab-runners-maintenance.service" ];
 
   nix.gc = {
     automatic = true;
@@ -94,45 +140,13 @@ in
     options = "--delete-older-than 14d";
   };
 
-  # The token file holds one line, RUNNER_ACCESS_TOKEN=<token>, and is copied to
-  # the machine by hand (../README.md): this repository is public.
-  # TODO: a token in a root-only file is the whole secret handling. sops-nix or
-  # agenix would keep it encrypted in the repository and survive a reinstall.
-  systemd.services.tabletab-runners = {
-    description = "TableTab GitHub Actions runners, from table-tab's own compose file";
+  systemd.services.tabletab-runners = runnerService "sync" // {
+    description = "TableTab GitHub Actions runners, following table-tab's master";
     wantedBy = [ "multi-user.target" ];
-    requires = [ "docker.service" ];
-    after = [
-      "docker.service"
-      "network-online.target"
-    ];
-    wants = [ "network-online.target" ];
     startAt = "hourly";
-    path = with pkgs; [
-      bash
-      coreutils
-      docker
-      findutils
-      gh
-      git
-      gnugrep
-      gnused
-    ];
-    environment = {
-      HOME = "/var/lib/tabletab-runners";
-      REPOSITORY = repository;
-      RUNNER_COUNT = toString runnerCount;
-      RUNNER_AUTO_LABEL = "false";
-      GIT_CONFIG_COUNT = "1";
-      GIT_CONFIG_KEY_0 = "credential.helper";
-      GIT_CONFIG_VALUE_0 = "!gh auth git-credential";
-    };
-    serviceConfig = {
-      Type = "oneshot";
-      StateDirectory = "tabletab-runners";
-      StateDirectoryMode = "0700";
-      EnvironmentFile = "/var/lib/tabletab-runners/token.env";
-      ExecStart = "${pkgs.bash}/bin/bash ${./tabletab-runners.sh}";
-    };
+  };
+
+  systemd.services.tabletab-runners-maintenance = runnerService "maintain" // {
+    description = "Nightly clean start of the TableTab runners: drain, wipe, reboot";
   };
 }
