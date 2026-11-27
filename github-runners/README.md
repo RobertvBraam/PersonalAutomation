@@ -87,6 +87,16 @@ Neither token goes into this repository. Both are stored as user environment var
 
 Open a new terminal afterwards, so it sees them. The Terraform state is in Azure Storage (account `tabletapinfra`, container `personal-automation`), so Terraform also needs `az login`.
 
+That account keeps every earlier version of a state (the blob's versions in the Azure portal) and carries a lock that refuses to delete it. TableTab's state shares both. They were set by hand, once, and only an account that is created again needs them again:
+
+```powershell
+az storage account blob-service-properties update --account-name tabletapinfra --resource-group infrastructure --enable-versioning true
+```
+
+```powershell
+az lock create --name terraform-state --lock-type CanNotDelete --resource-group infrastructure --resource-name tabletapinfra --resource-type Microsoft.Storage/storageAccounts
+```
+
 ### 2. Claim the server
 
 ```powershell
@@ -190,3 +200,4 @@ ssh-keygen -R <address>
 - The system finds the volume as "the Hetzner volume", which is right while the server has one. A second volume needs the rule in `nixos/configuration.nix` narrowed to this one's id.
 - The hourly run knows which three paths in table-tab the runners are built from. If `scripts/runner.sh` starts reading a fourth, the copy here has to follow.
 - After taking the runners out of rotation, the script waits 15 seconds before it trusts that no job is on its way. That number is a guess.
+- The versioning and the delete lock on the state's storage account were set by hand (step 1), because no Terraform owns that account. An account that is created again comes back without them.

@@ -19,6 +19,9 @@ terraform {
 
   # The storage account TableTab's Terraform keeps its state in, with a
   # container per repository. Access is through `az login`.
+  # TODO: no Terraform owns that account. Its versioning and its delete lock
+  # were set by hand (../README.md, step 1), so an account that is created
+  # again needs them again. A stack that owns the account would hold them.
   backend "azurerm" {
     resource_group_name  = "infrastructure"
     storage_account_name = "tabletapinfra"
