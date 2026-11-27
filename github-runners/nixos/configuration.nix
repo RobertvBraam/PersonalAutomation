@@ -39,7 +39,6 @@ let
       REPOSITORY = repository;
       RUNNER_COUNT = toString runnerCount;
       DRAIN_PATIENCE_MINUTES = toString drainPatienceMinutes;
-      RUNNER_AUTO_LABEL = "false";
       GIT_CONFIG_COUNT = "1";
       GIT_CONFIG_KEY_0 = "credential.helper";
       GIT_CONFIG_VALUE_0 = "!gh auth git-credential";
@@ -148,5 +147,6 @@ in
 
   systemd.services.tabletab-runners-maintenance = runnerService "maintain" // {
     description = "Nightly clean start of the TableTab runners: drain, wipe, reboot";
+    unitConfig.SuccessAction = "reboot";
   };
 }

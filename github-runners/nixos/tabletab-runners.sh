@@ -121,6 +121,14 @@ fingerprint() {
   sha256sum <<<"$RUNNER_ACCESS_TOKEN $RUNNER_COUNT"
 }
 
+# `runner.sh up` sets the RUNNER_LABEL repository variable when it is missing,
+# which is wanted here: a laptop's `runner:down` clears it when it sees this
+# machine's runners out of rotation. `down` must never clear it for this
+# machine: jobs should wait out a restart, not fall to GitHub-hosted runners.
+stop_runners() {
+  RUNNER_AUTO_LABEL=false bash "$checkout/scripts/runner.sh" down
+}
+
 follow_master() {
   if ! flock --nonblock 9; then
     echo "The nightly maintenance is running, so this run does nothing."
@@ -147,7 +155,7 @@ follow_master() {
     echo "table-tab's runner setup changed, but a job is running here. The change waits for the next run."
     exit 0
   fi
-  bash "$checkout/scripts/runner.sh" down
+  stop_runners
   bash "$checkout/scripts/runner.sh" up "$RUNNER_COUNT"
   echo "$wanted" >"$applied"
 }
@@ -160,13 +168,12 @@ nightly_maintenance() {
   wait_until_idle "$DRAIN_PATIENCE_MINUTES" || fail "a job was still running after $DRAIN_PATIENCE_MINUTES minutes, so tonight's cleanup and reboot are skipped and the runners go back in rotation."
 
   if [ -d "$checkout/.git" ]; then
-    bash "$checkout/scripts/runner.sh" down
+    stop_runners
   fi
   docker system prune --all --volumes --force >/dev/null
   docker volume prune --all --force >/dev/null
   rm -rf "$checkout" "$applied"
-  echo "Runners stopped and every image, volume and checkout removed. Rebooting."
-  systemctl reboot
+  echo "Runners stopped and every image, volume and checkout removed. The machine reboots when this run ends."
 }
 
 case "${1:-}" in
