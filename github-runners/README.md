@@ -16,7 +16,7 @@ Nothing here ever stops a runner that is running a job.
 - **Every hour** (and at boot) `tabletab-runners.service` fetches table-tab's `master`. When what the runners are built from changed there (the `.github/runner` folder, `scripts/runner.sh`, the Playwright version in `tests/e2e/pnpm-lock.yaml`), it replaces the runners with `scripts/runner.sh down` and `up 2`. When nothing changed it only makes sure they are up.
 - **Before it replaces them, it takes them out of rotation.** It removes the `tabletab` label from the server's runners on GitHub, so they get no new job while a running one carries on. If a job is running, the change waits for the next hour and the labels go back. A run that dies half way leaves a note, and the next run puts the labels back.
 - **Every night at 04:00 in Japan** (19:00 UTC) the server starts clean. It builds its newest system from this repository's `master` on the newest commit of the NixOS release branch. Then it takes the runners out of rotation, waits up to two hours for running jobs, removes every container, image, volume and its table-tab checkout, and reboots into the new system. At boot the hourly service brings fresh runners up. A build that fails leaves the machine as it was, and a job that outlasts the two hours skips that night.
-- **Routing is not the server's business.** The repository variables `RUNNER_LABEL` and `GATE_RUNNER_LABEL` decide where jobs go, and the server never touches them. Both must be `tabletab` for jobs to land here.
+- **Routing stays on.** The repository variables `RUNNER_LABEL` and `GATE_RUNNER_LABEL` decide where jobs go, and both must be `tabletab` for jobs to land here. Whenever the server brings runners up it sets `RUNNER_LABEL` back if it is missing: a laptop's `pnpm runner:down` clears it when it finds the server's runners out of rotation. The server never clears it, so jobs wait out a restart, and it never touches `GATE_RUNNER_LABEL`.
 
 So a merged change to `nixos/` deploys itself the next night, and the first jobs of the day download their tools again (the .NET SDK, Node, packages, browsers).
 
@@ -77,7 +77,7 @@ Neither token goes into this repository. Both are stored as user environment var
   ```powershell
   [Environment]::SetEnvironmentVariable('HCLOUD_TOKEN', '<token>', 'User')
   ```
-- **GitHub**: a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for `RobertvBraam/table-tab` only, with Administration: Read and write (to register runners and take them out of rotation) and Contents: Read-only (to fetch the compose file).
+- **GitHub**: a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for `RobertvBraam/table-tab` only, with Administration: Read and write (to register runners and take them out of rotation), Contents: Read-only (to fetch the compose file) and Variables: Read and write (to set `RUNNER_LABEL` back when a laptop cleared it).
   ```powershell
   [Environment]::SetEnvironmentVariable('TABLETAB_RUNNER_TOKEN', '<token>', 'User')
   ```
@@ -153,7 +153,7 @@ gh variable set GATE_RUNNER_LABEL --repo RobertvBraam/table-tab --body tabletab
 - **Whoever can push to table-tab's `master` controls this server.** The hourly run executes that repository's `scripts/runner.sh` as root. That is the price of following the compose file without a copy; the jobs themselves already run whatever a workflow says.
 - **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine (table-tab's `ci-runners` skill, "What the user should know").
 - **Jobs cannot use Docker**, exactly as on a laptop runner: the runner is a container without the Docker socket.
-- **A job longer than two hours blocks that night's clean start**, and the server takes no new job while the night waits for it.
+- **A job longer than two hours blocks that night's clean start**, and the server takes no new job while the night waits for it. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
 - **Only IPv4 is configured.** The runners dial out and nothing dials in but SSH.
 
 ## Known shortcuts
