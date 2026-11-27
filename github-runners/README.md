@@ -197,7 +197,7 @@ ssh-keygen -R <address>
 - **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine, inside a runner's container (table-tab's `ci-runners` skill, "What the user should know").
 - **A container a job starts does not see the job's files**: the workspace lives in the runner's container, not on the server. So a workflow's `container:` and `services:` and Docker container actions are not expected to work, and were not tried.
 - **A port a job listens on or publishes** (TableTab's backend, its screenshot browser) exists in its runner's network only. It does not answer on the server itself or in another runner, so two runners can use the same port at once.
-- **A runner's traffic goes through a network in user space** (slirp4netns), not straight through the server's own. That is slower; how much was not measured.
+- **A runner's traffic goes through a network in user space** (slirp4netns), not straight through the server's own. That costs little: a 100 MB download took 0.24 seconds there against 0.19 on the server itself.
 - **Each runner keeps its own images and caches**, about 7 GB of images for one TableTab runner, and each downloads them again after the night.
 - **A failed runner is away for up to an hour.** It reports once, and the hourly check starts it again.
 - **A job longer than two hours blocks that night's clean start** and reports that night as failed, and the runners that were idle stay down while the night waits. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
