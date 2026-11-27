@@ -49,7 +49,7 @@ Host github-runner
 | The whole night now: new system, then the clean start | `ssh github-runner "systemctl start --no-block nixos-upgrade"` |
 | Apply a merged change to `nixos/` now, without a reboot | `ssh github-runner "nixos-rebuild switch --refresh --flake 'github:RobertvBraam/PersonalAutomation?dir=github-runners/nixos#github-runner'"` |
 
-A change applied by hand reaches a runner when it starts its next job, never under a running one. The exception is a change that takes a runner away (a lower `count`, a repository removed): applied by hand it stops that runner at once, job or not, so let the night do that one.
+A change applied by hand reaches a runner when it starts its next job, never under a running one. There are two exceptions, so let the night do these: a change that takes a runner away (a lower `count`, a repository removed) stops that runner at once, job or not, and a change to Docker itself (a new version, its settings) restarts every runner's Docker with the job in it.
 
 What GitHub sees, from the laptop:
 
@@ -196,7 +196,8 @@ ssh-keygen -R <address>
 - **A job has no root here.** It runs as its runner's user. It reaches that runner's images and volumes, and through those the next job on the same runner, until the night removes them. It reaches nothing else on the server: not the token, not root's files, not another runner's containers or ports.
 - **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine, inside a runner's container (table-tab's `ci-runners` skill, "What the user should know").
 - **A container a job starts does not see the job's files**: the workspace lives in the runner's container, not on the server. So a workflow's `container:` and `services:` and Docker container actions are not expected to work, and were not tried.
-- **A port a job publishes on `127.0.0.1`** (TableTab's screenshot browser) also answers on the server itself while the job runs, not in another runner's containers.
+- **A port a job listens on or publishes** (TableTab's backend, its screenshot browser) exists in its runner's network only. It does not answer on the server itself or in another runner, so two runners can use the same port at once.
+- **A runner's traffic goes through a network in user space** (slirp4netns), not straight through the server's own. That is slower; how much was not measured.
 - **Each runner keeps its own images and caches**, about 7 GB of images for one TableTab runner, and each downloads them again after the night.
 - **A failed runner is away for up to an hour.** It reports once, and the hourly check starts it again.
 - **A job longer than two hours blocks that night's clean start** and reports that night as failed, and the runners that were idle stay down while the night waits. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
@@ -212,7 +213,6 @@ ssh-keygen -R <address>
 - The runner image is raised by hand. GitHub stops sending jobs to a runner version some weeks after a newer one is out, which shows as runners that are online and never get a job.
 - One token serves every repository, so they all belong to one owner.
 - Images and volumes stay between the jobs of one runner, so a job can leave a changed image or cache for the next one, until the night removes them.
-- Each runner's Docker also forwards the ports its containers publish to the server's own `127.0.0.1`. Two runners that pick the same free port there may collide, which is not tried.
 - A failed runner waits for the hourly check before it starts again.
 - Taking a runner down rests on GitHub refusing to delete the registration of a busy runner, which GitHub does not document as a guarantee. The look for a running job afterwards does not catch a job assigned in the same second.
 - The versioning and the delete lock on the state's storage account were set by hand (step 1), because no Terraform owns that account. An account that is created again comes back without them.
