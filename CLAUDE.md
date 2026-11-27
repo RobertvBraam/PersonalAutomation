@@ -35,9 +35,11 @@ Shells: the router runs BusyBox ash and the Pi runs Raspberry Pi OS, so the scri
 
 One Hetzner CX33 (`github-runner`) on NixOS, serving TableTab's CI under the runner label `tabletab`. It is a live machine that jobs run on, deploys included: ask before a `terraform apply`, a reinstall or a reboot.
 
-- Terraform only claims the machine (`terraform/main.tf`); NixOS replaces the stock image afterwards, which is why the server resource ignores changes to `image` and `ssh_keys`. The state file is outside the checkout, at the path given to `terraform init -backend-config` (README, step 2). `HCLOUD_TOKEN` is a user environment variable, never a file here.
-- The runners are not defined here. `tabletab-runners.service` fetches table-tab's `master` every hour and runs its `scripts/runner.sh up`, so the runner image and the Playwright browser follow that repository. `nixos/tabletab-runners.sh` is the whole of this side: skip when a job is running, sync the checkout, call the script.
-- The server rebuilds itself every night from this repository's `master` (`system.autoUpgrade`), so a merged change to `nixos/` deploys without a step, and a broken one breaks the server the same night. Evaluate before merging (Commands).
+- Terraform only claims the machine (`terraform/main.tf`); NixOS replaces the stock image afterwards, which is why the server resource ignores changes to `image` and `ssh_keys`. The state is in Azure Storage (account `tabletapinfra`, the one TableTab's Terraform uses, container `personal-automation`), so Terraform needs `az login`. `HCLOUD_TOKEN` is a user environment variable, never a file here.
+- The runners are not defined here. `nixos/tabletab-runners.sh` runs table-tab's `scripts/runner.sh` from a checkout of its `master`, so the runner image and the Playwright browser follow that repository. It has two modes, each a systemd unit in `configuration.nix`: `sync` (boot and hourly) and `maintain` (nightly).
+- **Neither mode may stop a runner that is running a job.** A runner is taken out of rotation by removing its custom labels on GitHub (it gets no new job, a running one carries on), the script waits until no job runs, and only then touches containers. What was removed is written to `out-of-rotation` in the state directory first, and every run starts by putting back what an earlier one left. Keep that order in any change, and test it on the server with a fake `Runner.Worker` process (`docker exec -d <runner> bash -c "exec -a Runner.Worker sleep 60"`).
+- `sync` replaces the runners only when `fingerprint` changed: the three paths in table-tab that `runner.sh up` builds the containers from, the token and the count. Those paths are a copy of what table-tab's script reads.
+- The night (04:00 in Japan) is a chain: `nixos-upgrade` builds the newest system from this repository's `master` with `operation = "boot"`, and on success starts the `maintain` unit, which drains, removes every container, image, volume and the checkout, and reboots. So a merged change to `nixos/` deploys without a step, a broken one fails the build and leaves the machine as it was. Evaluate before merging (Commands).
 - `nixos/admin.pub` is read by both sides: Terraform finds the uploaded Hetzner key by it, NixOS authorises it for root. It carries no email comment; keep it that way.
 - Windows has no Nix. Anything that needs it runs in the `nixos/nix` Docker image, or on the server itself.
 - `.gitattributes` pins LF for `github-runners/`: the script runs on Linux and the flake is read from a Windows mount.
@@ -50,10 +52,16 @@ Evaluate the NixOS configuration (the whole system, without building it) after c
 docker run --rm -e "NIX_CONFIG=experimental-features = nix-command flakes" -v "${PWD}\github-runners\nixos:/flake" nixos/nix nix eval --raw /flake#nixosConfigurations.github-runner.config.system.build.toplevel.drvPath
 ```
 
-Check the Terraform (needs `terraform init` once, README step 2):
+Check the Terraform (needs `az login` and `terraform init` once, README step 2):
 
 ```powershell
 terraform -chdir=github-runners/terraform validate
+```
+
+Lint the runner script, on the server because it has Nix:
+
+```powershell
+cmd /c "ssh github-runner nix run nixpkgs#shellcheck -- /dev/stdin < github-runners\nixos\tabletab-runners.sh"
 ```
 
 Test `direct-sites` (stubs `pihole-FTL`, `ip` and `id`, so it runs on Windows in Git Bash or WSL). It runs every check and names the ones that fail:

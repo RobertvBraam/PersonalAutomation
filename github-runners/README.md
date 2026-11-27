@@ -1,20 +1,24 @@
 # GitHub runners
 
-One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [TableTab](https://github.com/RobertvBraam/table-tab), so its CI does not wait for a laptop to be awake. The runners are the same Docker containers `pnpm runner:up` starts on a laptop: the server takes table-tab's own compose file from `master` every hour, so the runner image and the Playwright browser follow that repository with no copy here.
+One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [TableTab](https://github.com/RobertvBraam/table-tab), so its CI does not wait for a laptop to be awake. The runners are the same Docker containers `pnpm runner:up` starts on a laptop: the server takes table-tab's own compose file from `master`, so the runner image and the Playwright browser follow that repository with no copy here.
 
 | Part | What it is |
 |---|---|
 | Server | `github-runner`, a CX33 (4 vCPU, 8 GB, 80 GB) in Nuremberg, EUR 8.49 a month. Find its address with `terraform output` (below) |
-| `terraform/` | Claims the server: a stock image, the admin SSH key and a firewall that lets only SSH and ping in |
-| `nixos/` | The system that replaces the stock image: `configuration.nix`, and the script the runner service runs |
+| `terraform/` | Claims the server: a stock image, the admin SSH key and a firewall that lets only SSH and ping in. State is in Azure Storage |
+| `nixos/` | The system that replaces the stock image: `configuration.nix`, and the script its two runner services run |
 | Runners | Two, labelled `tabletab`, next to whatever runs on a laptop. GitHub gives a job to any idle one |
 
 ## How it works
 
-- **`tabletab-runners.service`** runs at boot and every hour. It fetches table-tab's `master` into `/var/lib/tabletab-runners/table-tab` and runs `scripts/runner.sh up 2` there. That script starts the runner containers and the Playwright browser beside them, removes stale registrations and fails unless GitHub sees the runners online.
-- **A run never interrupts a job.** When a job is running on the server, the hourly run does nothing and the next hour tries again. So a new runner image or Playwright version on table-tab's `master` reaches the server within an hour of it being idle.
-- **Routing is not the server's business.** The repository variables `RUNNER_LABEL` and `GATE_RUNNER_LABEL` decide where jobs go, and the server never touches them (`RUNNER_AUTO_LABEL=false`). Both must be `tabletab` for jobs to land here.
-- **The server updates itself.** Every night at 18:00 UTC (03:00 in Japan) it rebuilds from this repository's `master` on the newest commit of the NixOS release branch. A merged change to `nixos/` needs no deploy step.
+Nothing here ever stops a runner that is running a job.
+
+- **Every hour** (and at boot) `tabletab-runners.service` fetches table-tab's `master`. When what the runners are built from changed there (the `.github/runner` folder, `scripts/runner.sh`, the Playwright version in `tests/e2e/pnpm-lock.yaml`), it replaces the runners with `scripts/runner.sh down` and `up 2`. When nothing changed it only makes sure they are up.
+- **Before it replaces them, it takes them out of rotation.** It removes the `tabletab` label from the server's runners on GitHub, so they get no new job while a running one carries on. If a job is running, the change waits for the next hour and the labels go back. A run that dies half way leaves a note, and the next run puts the labels back.
+- **Every night at 04:00 in Japan** (19:00 UTC) the server starts clean. It builds its newest system from this repository's `master` on the newest commit of the NixOS release branch. Then it takes the runners out of rotation, waits up to two hours for running jobs, removes every container, image, volume and its table-tab checkout, and reboots into the new system. At boot the hourly service brings fresh runners up. A build that fails leaves the machine as it was, and a job that outlasts the two hours skips that night.
+- **Routing is not the server's business.** The repository variables `RUNNER_LABEL` and `GATE_RUNNER_LABEL` decide where jobs go, and the server never touches them. Both must be `tabletab` for jobs to land here.
+
+So a merged change to `nixos/` deploys itself the next night, and the first jobs of the day download their tools again (the .NET SDK, Node, packages, browsers).
 
 ## Daily use
 
@@ -30,27 +34,31 @@ Host github-runner
 
 | What | Command |
 |---|---|
-| Did the last run work, and when is the next | `ssh github-runner "systemctl status tabletab-runners.service tabletab-runners.timer"` |
+| Did the last hourly run work, and when is the next | `ssh github-runner "systemctl status tabletab-runners.service tabletab-runners.timer"` |
 | What the last runs printed | `ssh github-runner "journalctl -u tabletab-runners -n 80 --no-pager"` |
+| How last night went | `ssh github-runner "journalctl -u nixos-upgrade -u tabletab-runners-maintenance --since yesterday --no-pager"` |
 | The containers | `ssh github-runner "docker ps"` |
 | What a runner is doing | `ssh github-runner "docker compose -p tabletab-runner logs --tail 50 runner"` |
-| Run now instead of at the next hour | `ssh github-runner "systemctl start tabletab-runners"` |
-| Apply a merged change to `nixos/` now instead of tonight | `ssh github-runner "systemctl start nixos-upgrade"` |
-| Reboot (for a new kernel, when no job is running) | `ssh github-runner "reboot"` |
+| Run the hourly check now | `ssh github-runner "systemctl start tabletab-runners"` |
+| Clean start now: wait for jobs, wipe, reboot | `ssh github-runner "systemctl start --no-block tabletab-runners-maintenance"` |
+| The whole night now: new system, then the clean start | `ssh github-runner "systemctl start --no-block nixos-upgrade"` |
+| Apply a merged change to `nixos/` now, without a reboot | `ssh github-runner "nixos-rebuild switch --refresh --flake 'github:RobertvBraam/PersonalAutomation?dir=github-runners/nixos#github-runner'"` |
 
 What GitHub sees, from the laptop:
 
 ```powershell
-gh api repos/RobertvBraam/table-tab/actions/runners --jq ".runners[] | [.name, .status, (.busy|tostring)] | @tsv"
+gh api repos/RobertvBraam/table-tab/actions/runners --jq ".runners[] | [.name, .status, (.busy|tostring), (.labels | map(.name) | tostring)] | @tsv"
 ```
 
-When jobs stay queued, start with `systemctl status tabletab-runners`: a failed run names what is wrong, and an expired token is the usual cause.
+A server runner that is online without the `tabletab` label is out of rotation on purpose: at night, or for a few seconds while the hourly run checks for a running job. When jobs stay queued, start with `systemctl status tabletab-runners`: a failed run names what is wrong, and an expired token is the usual cause.
 
 ## Changing it
 
 | To change | Edit |
 |---|---|
 | How many jobs run at once | `runnerCount` in `nixos/configuration.nix` |
+| How long the night waits for running jobs | `drainPatienceMinutes` in `nixos/configuration.nix` |
+| When the night starts | `dates` under `system.autoUpgrade` in `nixos/configuration.nix` |
 | Which repository | `repository` in `nixos/configuration.nix`. It must have table-tab's `scripts/runner.sh` |
 | The NixOS release | `nixosRelease` in `nixos/configuration.nix` and the `nixpkgs` input in `nixos/flake.nix` |
 | Server size or location | `server_type` and `location` in `terraform/main.tf`. A new location replaces the server |
@@ -61,7 +69,7 @@ Never attach this server to a public repository: a pull request from a stranger 
 
 Run the PowerShell commands from the root of this repository. Docker Desktop must be running: it provides Nix, which Windows does not have.
 
-### 1. Tokens
+### 1. Tokens and logins
 
 Neither token goes into this repository. Both are stored as user environment variables, replacing `<token>`:
 
@@ -69,19 +77,17 @@ Neither token goes into this repository. Both are stored as user environment var
   ```powershell
   [Environment]::SetEnvironmentVariable('HCLOUD_TOKEN', '<token>', 'User')
   ```
-- **GitHub**: a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for `RobertvBraam/table-tab` only, with Administration: Read and write (to register runners) and Contents: Read-only (to fetch the compose file).
+- **GitHub**: a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for `RobertvBraam/table-tab` only, with Administration: Read and write (to register runners and take them out of rotation) and Contents: Read-only (to fetch the compose file).
   ```powershell
   [Environment]::SetEnvironmentVariable('TABLETAB_RUNNER_TOKEN', '<token>', 'User')
   ```
 
-Open a new terminal afterwards, so it sees them.
+Open a new terminal afterwards, so it sees them. The Terraform state is in Azure Storage (account `tabletapinfra`, container `personal-automation`), so Terraform also needs `az login`.
 
 ### 2. Claim the server
 
-The state file lives outside the checkout, so removing a worktree cannot lose it.
-
 ```powershell
-terraform -chdir=github-runners/terraform init -backend-config="path=C:/Users/Robert/.terraform-state/personal-automation-github-runners.tfstate"
+terraform -chdir=github-runners/terraform init
 ```
 
 ```powershell
@@ -147,14 +153,13 @@ gh variable set GATE_RUNNER_LABEL --repo RobertvBraam/table-tab --body tabletab
 - **Whoever can push to table-tab's `master` controls this server.** The hourly run executes that repository's `scripts/runner.sh` as root. That is the price of following the compose file without a copy; the jobs themselves already run whatever a workflow says.
 - **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine (table-tab's `ci-runners` skill, "What the user should know").
 - **Jobs cannot use Docker**, exactly as on a laptop runner: the runner is a container without the Docker socket.
+- **A job longer than two hours blocks that night's clean start**, and the server takes no new job while the night waits for it.
 - **Only IPv4 is configured.** The runners dial out and nothing dials in but SSH.
-- The first job after an install is slow: the .NET SDK, Node and the browsers download into Docker volumes once.
 
 ## Known shortcuts
 
 `git grep -n "TODO: " -- github-runners` lists them where they live:
 
-- The Terraform state is one file on the laptop.
 - The GitHub token is a root-only file on the server, copied by hand. A reinstall needs step 4 again.
-- A new kernel waits for a manual reboot.
-- A job that starts in the seconds between the hourly check and a runner image change is abandoned.
+- The hourly run knows which three paths in table-tab the runners are built from. If `scripts/runner.sh` starts reading a fourth, the copy here has to follow.
+- After taking the runners out of rotation, the script waits 15 seconds before it trusts that no job is on its way. That number is a guess.
