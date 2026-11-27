@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   modulesPath,
   pkgs,
@@ -6,11 +7,37 @@
 }:
 
 let
-  repository = "RobertvBraam/table-tab";
+  # The repositories this machine runs jobs for. Each gets an unprivileged user
+  # with a Docker daemon of its own and `count` runners, and every runner takes
+  # one job in a fresh container. `labels` are what a workflow's `runs-on` asks
+  # for. `volumes` are named volumes of that daemon, mounted in every runner of
+  # the repository: what a job should find again in the next one. The job's
+  # workspace is /_work/<runner>, removed before every job.
+  repositories = {
+    table-tab = {
+      repository = "RobertvBraam/table-tab";
+      # The CX33 has 4 vCPUs and 8 GB, and one PR gate alone starts a backend, a
+      # dev server and four browsers.
+      count = 2;
+      labels = [ "tabletab" ];
+      volumes = [
+        "work:/_work"
+        "toolcache:/opt/hostedtoolcache"
+        "cache:/root/.cache"
+        "nuget:/root/.nuget"
+      ];
+    };
+  };
 
-  # Jobs that run at the same time. The CX33 has 4 vCPUs and 8 GB, and one PR
-  # gate alone starts a backend, a dev server and four browsers.
-  runnerCount = 2;
+  # TODO: raised by hand. GitHub stops sending jobs to a runner version some
+  # weeks after a newer one is out, which shows as runners that are online and
+  # never get a job. Something that raises the pin by itself would remove the
+  # chore (table-tab's Dependabot does it for the laptops' compose file).
+  runnerImage = "myoung34/github-runner:2.338.2-ubuntu-resolute";
+
+  # Where failures and the hourly sign of life go: TableTab's SigNoz, whose
+  # alert rules post to Slack.
+  otlpEndpoint = "https://otel.tabletab.app";
 
   # How long the nightly maintenance waits for running jobs before it gives up
   # for that night. Longer than a PR gate, shorter than the weekly mutation run.
@@ -23,42 +50,74 @@ let
   persist = "/persist";
 
   # One line, RUNNER_ACCESS_TOKEN=<token>, written to the volume once
-  # (../README.md) and never to this repository, which is public.
+  # (../README.md) and never to this repository, which is public. Only root
+  # reads it: a runner container gets a registration for one job instead.
+  # TODO: one token for every repository, so they all belong to one owner. A
+  # repository of another owner needs a token file of its own.
   tokenFile = "${persist}/token.env";
 
-  # The two modes of tabletab-runners.sh share everything but their trigger.
-  runnerService = mode: {
-    requires = [ "docker.service" ];
-    after = [
-      "docker.service"
-      "network-online.target"
-    ];
-    wants = [ "network-online.target" ];
-    unitConfig.RequiresMountsFor = persist;
-    path = with pkgs; [
-      bash
-      docker
-      gh
-      git
-      util-linux
+  userOf = name: "runner-${name}";
+  slotsOf = name: cfg: map (number: "github-runner-${name}-${toString number}") (lib.range 1 cfg.count);
+  slotUnits = map (slot: "${slot}.service") (lib.concatLists (lib.mapAttrsToList slotsOf repositories));
+
+  run = mode: "${pkgs.bash}/bin/bash ${./runner-server.sh} ${mode}";
+  reportFailure = [ "runner-server-report@%N.service" ];
+
+  # What every unit that runs runner-server.sh shares.
+  serverService = {
+    path = [
+      config.virtualisation.docker.rootless.package
+      pkgs.bash
+      pkgs.curl
+      pkgs.gh
+      pkgs.jq
+      pkgs.util-linux
     ];
     environment = {
-      HOME = "/var/lib/tabletab-runners";
-      REPOSITORY = repository;
-      RUNNER_COUNT = toString runnerCount;
-      DRAIN_PATIENCE_MINUTES = toString drainPatienceMinutes;
-      GIT_CONFIG_COUNT = "1";
-      GIT_CONFIG_KEY_0 = "credential.helper";
-      GIT_CONFIG_VALUE_0 = "!gh auth git-credential";
+      HOME = "/run/runner-server";
+      OTLP_ENDPOINT = otlpEndpoint;
     };
     serviceConfig = {
-      Type = "oneshot";
-      StateDirectory = "tabletab-runners";
-      StateDirectoryMode = "0700";
-      EnvironmentFile = tokenFile;
-      ExecStart = "${pkgs.bash}/bin/bash ${./tabletab-runners.sh} ${mode}";
+      RuntimeDirectory = "runner-server";
+      RuntimeDirectoryMode = "0700";
+      RuntimeDirectoryPreserve = true;
     };
   };
+
+  # One runner. It ends with its job and starts again for the next one. A
+  # changed definition is not applied under a running job: it takes effect when
+  # the runner starts again.
+  slotService =
+    name: cfg: slot:
+    lib.nameValuePair slot (
+      lib.mkMerge [
+        serverService
+        {
+          description = "GitHub Actions runner for ${cfg.repository}, one job per container";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          onFailure = reportFailure;
+          restartIfChanged = false;
+          startLimitIntervalSec = 0;
+          unitConfig.RequiresMountsFor = persist;
+          environment = {
+            REPOSITORY = cfg.repository;
+            RUNNER_USER = userOf name;
+            RUNNER_NAME = slot;
+            RUNNER_LABELS = lib.concatStringsSep "," cfg.labels;
+            RUNNER_VOLUMES = lib.concatStringsSep " " cfg.volumes;
+            RUNNER_IMAGE = runnerImage;
+          };
+          serviceConfig = {
+            EnvironmentFile = tokenFile;
+            ExecStart = run "slot";
+            Restart = "on-success";
+            RestartSec = 2;
+          };
+        }
+      ]
+    );
 in
 {
   imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];
@@ -137,17 +196,48 @@ in
       PermitRootLogin = "prohibit-password";
     };
   };
-  users.users.root.openssh.authorizedKeys.keyFiles = [ ./admin.pub ];
 
-  virtualisation.docker.enable = true;
+  # A repository's jobs run as its own user and reach nothing of root's: not
+  # the token, not another repository's containers. The user's manager starts
+  # at boot (linger) and runs that user's Docker daemon.
+  # TODO: one daemon per repository, so a job can leave a container behind that
+  # reaches a later job of the same repository, until the night removes it. A
+  # daemon per runner would close that, at the price of an image store each.
+  users.groups = lib.mapAttrs' (name: _: lib.nameValuePair (userOf name) { }) repositories;
+  users.users =
+    lib.mapAttrs' (
+      name: _:
+      lib.nameValuePair (userOf name) {
+        isSystemUser = true;
+        group = userOf name;
+        home = "/var/lib/${userOf name}";
+        createHome = true;
+        autoSubUidGidRange = true;
+        linger = true;
+      }
+    ) repositories
+    // {
+      root.openssh.authorizedKeys.keyFiles = [ ./admin.pub ];
+    };
+  virtualisation.docker.rootless.enable = true;
+
+  # What NixOS loads for a root Docker daemon. This machine has none, and a
+  # daemon without root cannot be counted on to get them loaded itself.
+  boot.kernelModules = [
+    "bridge"
+    "veth"
+    "br_netfilter"
+    "xt_nat"
+  ];
+
   zramSwap.enable = true;
 
   # The night, 04:00 in Japan. First the newest system is built from this
   # repository's master on the newest commit of the NixOS release branch and
   # made the one to boot ("boot", so nothing changes under a running job). When
   # that worked, the maintenance lets the running jobs finish, removes every
-  # container, image, volume and checkout, and reboots into the new system. A
-  # build that fails leaves the machine as it was, with no reboot.
+  # container, image and volume, and reboots into the new system. A build that
+  # fails leaves the machine as it was, with no reboot.
   system.autoUpgrade = {
     enable = true;
     operation = "boot";
@@ -159,7 +249,6 @@ in
       "github:NixOS/nixpkgs/nixos-${nixosRelease}"
     ];
   };
-  systemd.services.nixos-upgrade.onSuccess = [ "tabletab-runners-maintenance.service" ];
 
   nix.gc = {
     automatic = true;
@@ -167,20 +256,64 @@ in
     options = "--delete-older-than 14d";
   };
 
-  systemd.services.tabletab-runners = lib.mkMerge [
-    (runnerService "sync")
+  systemd.services = lib.mkMerge [
+    (lib.listToAttrs (
+      lib.concatLists (
+        lib.mapAttrsToList (name: cfg: map (slotService name cfg) (slotsOf name cfg)) repositories
+      )
+    ))
     {
-      description = "TableTab GitHub Actions runners, following table-tab's master";
-      wantedBy = [ "multi-user.target" ];
-      startAt = "hourly";
-    }
-  ];
+      nixos-upgrade = {
+        onSuccess = [ "runner-server-maintenance.service" ];
+        onFailure = reportFailure;
+      };
 
-  systemd.services.tabletab-runners-maintenance = lib.mkMerge [
-    (runnerService "maintain")
-    {
-      description = "Nightly clean start of the TableTab runners: drain, wipe, reboot";
-      unitConfig.SuccessAction = "reboot";
+      runner-server-check = lib.mkMerge [
+        serverService
+        {
+          description = "Hourly check of the runners: start the failed ones, report a sign of life";
+          startAt = "hourly";
+          onFailure = reportFailure;
+          environment.SLOT_UNITS = lib.concatStringsSep " " slotUnits;
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = run "check";
+          };
+        }
+      ];
+
+      runner-server-maintenance = lib.mkMerge [
+        serverService
+        {
+          description = "Nightly clean start of the runners: drain, wipe, reboot";
+          onFailure = reportFailure;
+          unitConfig = {
+            RequiresMountsFor = persist;
+            SuccessAction = "reboot";
+          };
+          environment = {
+            SLOT_UNITS = lib.concatStringsSep " " slotUnits;
+            RUNNER_USERS = lib.concatStringsSep " " (map userOf (lib.attrNames repositories));
+            DRAIN_PATIENCE_MINUTES = toString drainPatienceMinutes;
+          };
+          serviceConfig = {
+            Type = "oneshot";
+            EnvironmentFile = tokenFile;
+            ExecStart = run "maintain";
+          };
+        }
+      ];
+
+      "runner-server-report@" = lib.mkMerge [
+        serverService
+        {
+          description = "Reports the failed unit %i to SigNoz";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = run "report %i";
+          };
+        }
+      ];
     }
   ];
 }
