@@ -199,6 +199,7 @@ ssh-keygen -R <address>
 - **A port a job listens on or publishes** (TableTab's backend, its screenshot browser) exists in its runner's network only. It does not answer on the server itself or in another runner, so two runners can use the same port at once.
 - **A runner's traffic goes through a network in user space** (slirp4netns), not straight through the server's own. That costs little: a 100 MB download took 0.24 seconds there against 0.19 on the server itself.
 - **Each runner keeps its own images and caches**, about 7 GB of images for one TableTab runner, and each downloads them again after the night.
+- **The runners share the CPU evenly**, each being a user of its own. All of them together stand one to one against the server's own services, so a job cannot starve SSH or the hourly check.
 - **A failed runner is away for up to an hour.** It reports once, and the hourly check starts it again.
 - **A job longer than two hours blocks that night's clean start** and reports that night as failed, and the runners that were idle stay down while the night waits. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
 - **Only IPv4 is configured.** The runners dial out and nothing dials in but SSH.
