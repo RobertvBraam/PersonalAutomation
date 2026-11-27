@@ -82,7 +82,6 @@ in
     dates = "18:00";
     flake = "github:RobertvBraam/PersonalAutomation?dir=github-runners/nixos#github-runner";
     flags = [
-      "--refresh"
       "--override-input"
       "nixpkgs"
       "github:NixOS/nixpkgs/nixos-${nixosRelease}"

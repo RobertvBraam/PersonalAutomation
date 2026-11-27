@@ -17,6 +17,9 @@ fail() {
 
 # `runner.sh up` recreates a runner whose image changed, which abandons the job
 # it is running. The Actions runner starts a Runner.Worker process per job.
+# TODO: a job that starts in the seconds between this check and `up` is still
+# abandoned when the image changed in that same hour. Draining the runners
+# first (stop accepting jobs, wait, then `up`) would close that window.
 a_job_is_running() {
   local id
   for id in $(docker ps -q); do
