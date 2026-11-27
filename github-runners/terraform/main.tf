@@ -17,10 +17,14 @@ terraform {
     }
   }
 
-  # TODO: the state is a file on one machine, at the path given to
-  # `terraform init -backend-config` (../README.md). Losing that machine means
-  # importing the three resources again; a remote backend would remove that.
-  backend "local" {}
+  # The storage account TableTab's Terraform keeps its state in, with a
+  # container per repository. Access is through `az login`.
+  backend "azurerm" {
+    resource_group_name  = "infrastructure"
+    storage_account_name = "tabletapinfra"
+    container_name       = "personal-automation"
+    key                  = "github-runners.tfstate"
+  }
 }
 
 provider "hcloud" {}
