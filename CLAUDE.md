@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Robert's personal setup files, plus the scripts that run his home network. Nothing here is built or installed by a tool: each file is copied or run by hand where it belongs. **The repository is public.**
+Robert's personal setup files, the scripts that run his home network, and the server that runs his GitHub Actions runners. Apart from `github-runners/`, nothing here is built or installed by a tool: each file is copied or run by hand where it belongs. **The repository is public.**
 
 ## Layout
 
@@ -15,8 +15,10 @@ Robert's personal setup files, plus the scripts that run his home network. Nothi
 | `sql/` | One-off SQL Server queries |
 | `home-network/router/` | OpenWrt scripts for the Netgear R7800 router |
 | `home-network/pihole/` | The `direct-sites` command for the Pi-hole, and its test |
+| `github-runners/terraform/` | Terraform for the Hetzner Cloud server the GitHub Actions runners live on |
+| `github-runners/nixos/` | The NixOS system of that server: a flake, `configuration.nix` and the script its runner service runs |
 
-`home-network/README.md` is the operating manual: daily commands, setting it up from scratch, and the lessons from the first setup. Read it before changing the network scripts, and keep it in step with them.
+`home-network/README.md` and `github-runners/README.md` are the operating manuals: daily commands and setting it up from scratch (the network one also has the lessons from the first setup). Read the one for the area before changing it, and keep it in step with the files.
 
 ## Home network scripts
 
@@ -29,7 +31,30 @@ The three router scripts run in order on a live router: `r7800-setup.sh` once on
 
 Shells: the router runs BusyBox ash and the Pi runs Raspberry Pi OS, so the scripts are POSIX `sh` without bashisms. `.gitattributes` pins LF for `home-network/`, because `.gitconfig` sets `autocrlf = true` and BusyBox fails on CRLF. The router has `apk` (OpenWrt 25.12) and no SFTP server, so `scp` to it needs `-O`.
 
+## GitHub runners server
+
+One Hetzner CX33 (`github-runner`) on NixOS, serving TableTab's CI under the runner label `tabletab`. It is a live machine that jobs run on, deploys included: ask before a `terraform apply`, a reinstall or a reboot.
+
+- Terraform only claims the machine (`terraform/main.tf`); NixOS replaces the stock image afterwards, which is why the server resource ignores changes to `image` and `ssh_keys`. The state file is outside the checkout, at the path given to `terraform init -backend-config` (README, step 2). `HCLOUD_TOKEN` is a user environment variable, never a file here.
+- The runners are not defined here. `tabletab-runners.service` fetches table-tab's `master` every hour and runs its `scripts/runner.sh up`, so the runner image and the Playwright browser follow that repository. `nixos/tabletab-runners.sh` is the whole of this side: skip when a job is running, sync the checkout, call the script.
+- The server rebuilds itself every night from this repository's `master` (`system.autoUpgrade`), so a merged change to `nixos/` deploys without a step, and a broken one breaks the server the same night. Evaluate before merging (Commands).
+- `nixos/admin.pub` is read by both sides: Terraform finds the uploaded Hetzner key by it, NixOS authorises it for root. It carries no email comment; keep it that way.
+- Windows has no Nix. Anything that needs it runs in the `nixos/nix` Docker image, or on the server itself.
+- `.gitattributes` pins LF for `github-runners/`: the script runs on Linux and the flake is read from a Windows mount.
+
 ## Commands
+
+Evaluate the NixOS configuration (the whole system, without building it) after changing anything in `github-runners/nixos/`:
+
+```powershell
+docker run --rm -e "NIX_CONFIG=experimental-features = nix-command flakes" -v "${PWD}\github-runners\nixos:/flake" nixos/nix nix eval --raw /flake#nixosConfigurations.github-runner.config.system.build.toplevel.drvPath
+```
+
+Check the Terraform (needs `terraform init` once, README step 2):
+
+```powershell
+terraform -chdir=github-runners/terraform validate
+```
 
 Test `direct-sites` (stubs `pihole-FTL`, `ip` and `id`, so it runs on Windows in Git Bash or WSL). It runs every check and names the ones that fail:
 
@@ -43,10 +68,10 @@ Run a router script from PowerShell (it has no `<` redirect, hence `cmd /c`). Th
 cmd /c "ssh root@192.168.0.1 sh -s < home-network\router\r7800-extras.sh"
 ```
 
-There is no linter or build step.
+There is no linter or build step beyond these.
 
 ## Conventions
 
-- Every deliberate shortcut in the scripts is a `TODO: ` comment: `git grep -n "TODO: " -- home-network` lists them.
+- Every deliberate shortcut is a `TODO: ` comment where it lives: `git grep -n "TODO: "` lists them.
 - Script errors go through `fail`, which prints a message saying what to do and exits non-zero.
 - Commit subjects are plain imperative sentences; PR titles follow Conventional Commits (`feat(home-network): ...`).
