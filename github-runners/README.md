@@ -1,6 +1,6 @@
 # GitHub runners
 
-One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [TableTab](https://github.com/RobertvBraam/table-tab), so its CI does not wait for a laptop to be awake. It can serve more repositories: each is an entry in a list. Every job gets a fresh container, and a repository's containers run on a Docker daemon of its own that has no root on the server.
+One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [TableTab](https://github.com/RobertvBraam/table-tab), so its CI does not wait for a laptop to be awake. It can serve more repositories: each is an entry in a list. Every job gets a fresh container, on a Docker daemon that belongs to its runner alone and has no root on the server.
 
 | Part | What it is |
 |---|---|
@@ -14,10 +14,10 @@ One Hetzner Cloud server on NixOS that runs the GitHub Actions runners for [Tabl
 
 Nothing here ever stops a runner that is running a job, and nothing from a repository runs outside a runner container.
 
-- **A repository is an entry in a list** (`repositories` in `nixos/configuration.nix`): its name, how many runners, their labels, and the volumes a job should find again in the next one. Each repository gets an unprivileged user on the server with a Docker daemon of its own.
-- **A runner takes one job.** `github-runner-<repository>-<number>.service` asks GitHub for a registration that is good for one job, starts a fresh container with it on the repository's daemon, and starts again when the job is done. The workspace of the job before is removed first; the volumes stay.
+- **A repository is an entry in a list** (`repositories` in `nixos/configuration.nix`): its name, how many runners, their labels, and the volumes a job should find again in the next one. Each runner is an unprivileged user on the server with a Docker daemon of its own.
+- **A runner takes one job.** `github-runner-<repository>-<number>.service` asks GitHub for a registration that is good for one job, starts a fresh container with it on its own daemon, and starts again when the job is done. What the job before left running is removed first, and so is its workspace; the volumes stay.
 - **The token stays with root.** Only the one-job registration enters a container. A job can read it, and it is worth nothing once that job is over.
-- **A job can start containers of its own**, the way it would on a GitHub-hosted runner, on its repository's daemon. They run as the repository's user: they reach that repository's other containers and nothing of the server's.
+- **A job can start containers of its own**, on its runner's daemon. They run as that runner's user and share its network, so `127.0.0.1` is the job's own, as on a GitHub-hosted runner: two jobs that listen on the same port do not meet. They reach nothing of the server's and nothing of another runner's.
 - **A runner that fails stays down and says so.** A runner, the hourly check, the nightly build and the nightly clean start each send a span to SigNoz when they fail, and an alert rule in table-tab posts it to Slack. Every hour `runner-server-check` starts the failed runners again and sends a sign of life; a second rule fires when none arrived for two hours.
 - **Every night at 04:00 in Japan** (19:00 UTC) the server starts clean. It builds its newest system from this repository's `master` on the newest commit of the NixOS release branch. Then it takes the runners down one by one: it deletes an idle runner's registration, which GitHub refuses while a job is assigned to it, and only then stops it. It waits up to two hours for the busy ones, removes every container, image and volume, and reboots into the new system. A build that fails leaves the machine as it was, and a job that outlasts the two hours skips that night.
 - **Routing is the repository's.** A job lands here when its `runs-on` names a label of these runners. For TableTab that is the repository variables `RUNNER_LABEL` and `GATE_RUNNER_LABEL`, both `tabletab`. The server never reads or changes them.
@@ -42,7 +42,7 @@ Host github-runner
 | What a runner printed | `ssh github-runner "journalctl -u github-runner-table-tab-1 -n 50 --no-pager"` |
 | Did the last hourly check work, and when is the next | `ssh github-runner "systemctl status runner-server-check.service runner-server-check.timer"` |
 | How last night went | `ssh github-runner "journalctl -u nixos-upgrade -u runner-server-maintenance --since yesterday --no-pager"` |
-| A repository's containers | `ssh github-runner 'docker -H unix:///run/user/$(id -u runner-table-tab)/docker.sock ps'` |
+| A runner's containers | `ssh github-runner 'docker -H unix:///run/user/$(id -u runner-table-tab-1)/docker.sock ps'` |
 | Is the volume mounted | `ssh github-runner "findmnt /persist"` |
 | Start the failed runners again now | `ssh github-runner "systemctl start runner-server-check"` |
 | Clean start now: wait for jobs, wipe, reboot | `ssh github-runner "systemctl start --no-block runner-server-maintenance"` |
@@ -65,7 +65,7 @@ A runner is away from that list for a few seconds between two jobs: it registers
 |---|---|
 | Which repositories | An entry in `repositories` in `nixos/configuration.nix`. The token must cover it (step 1), and its workflows must ask for one of its `labels` |
 | How many jobs of a repository run at once | Its `count` |
-| What a job finds again in the next one | Its `volumes` |
+| What a job finds again in the next one on the same runner | Its `volumes` |
 | The runner image and version | `runnerImage` in `nixos/configuration.nix` |
 | Where failures are reported | `otlpEndpoint` in `nixos/configuration.nix` |
 | How long the night waits for running jobs | `drainPatienceMinutes` in `nixos/configuration.nix` |
@@ -193,11 +193,11 @@ ssh-keygen -R <address>
 
 ## Good to know
 
-- **A repository has no root here.** Its jobs run as its own user. They reach that repository's containers, images and volumes, and through those a later job of the same repository, until the night removes what they left. They reach nothing else on the server: not the token, not root's files, not another repository's containers.
-- **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine, inside that repository's containers (table-tab's `ci-runners` skill, "What the user should know").
+- **A job has no root here.** It runs as its runner's user. It reaches that runner's images and volumes, and through those the next job on the same runner, until the night removes them. It reaches nothing else on the server: not the token, not root's files, not another runner's containers or ports.
+- **Deploy jobs run here too.** Every TableTab job routes by label, so the Azure and Terraform credentials of a deploy pass through this machine, inside a runner's container (table-tab's `ci-runners` skill, "What the user should know").
 - **A container a job starts does not see the job's files**: the workspace lives in the runner's container, not on the server. So a workflow's `container:` and `services:` and Docker container actions are not expected to work, and were not tried.
-- **A port a job publishes on `127.0.0.1`** (TableTab's screenshot browser) also answers on the server itself while the job runs, not in another repository's containers.
-- **Each repository keeps its own images**, about 7 GB for TableTab's runner and Playwright images.
+- **A port a job publishes on `127.0.0.1`** (TableTab's screenshot browser) also answers on the server itself while the job runs, not in another runner's containers.
+- **Each runner keeps its own images and caches**, about 7 GB of images for one TableTab runner, and each downloads them again after the night.
 - **A failed runner is away for up to an hour.** It reports once, and the hourly check starts it again.
 - **A job longer than two hours blocks that night's clean start** and reports that night as failed, and the runners that were idle stay down while the night waits. TableTab's weekly mutation run is one: it starts on Friday at 17:23 UTC, before the night does.
 - **Only IPv4 is configured.** The runners dial out and nothing dials in but SSH.
@@ -211,7 +211,8 @@ ssh-keygen -R <address>
 - The system finds the volume as "the Hetzner volume", which is right while the server has one. A second volume needs the rule in `nixos/configuration.nix` narrowed to this one's id.
 - The runner image is raised by hand. GitHub stops sending jobs to a runner version some weeks after a newer one is out, which shows as runners that are online and never get a job.
 - One token serves every repository, so they all belong to one owner.
-- One Docker daemon per repository, not per runner: a job can leave a container behind that reaches a later job of the same repository, until the night removes it.
+- Images and volumes stay between the jobs of one runner, so a job can leave a changed image or cache for the next one, until the night removes them.
+- Each runner's Docker also forwards the ports its containers publish to the server's own `127.0.0.1`. Two runners that pick the same free port there may collide, which is not tried.
 - A failed runner waits for the hourly check before it starts again.
 - Taking a runner down rests on GitHub refusing to delete the registration of a busy runner, which GitHub does not document as a guarantee. The look for a running job afterwards does not catch a job assigned in the same second.
 - The versioning and the delete lock on the state's storage account were set by hand (step 1), because no Terraform owns that account. An account that is created again comes back without them.
