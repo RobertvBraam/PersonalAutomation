@@ -18,6 +18,11 @@ let
       repository = "RobertvBraam/table-tab";
       # The CX33 has 4 vCPUs and 8 GB, and one PR gate alone starts a backend, a
       # dev server and four browsers.
+      # TODO: two gates at once are more than this machine carries. On
+      # 2026-11-27 both then failed their slowest tests on timeouts, with this
+      # design and with the one before it. One runner for the gate under a label
+      # of its own, a machine with more cores, or fewer browsers per gate would
+      # fix it.
       count = 2;
       labels = [ "tabletab" ];
       volumes = [

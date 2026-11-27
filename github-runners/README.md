@@ -213,6 +213,7 @@ ssh-keygen -R <address>
 - The system finds the volume as "the Hetzner volume", which is right while the server has one. A second volume needs the rule in `nixos/configuration.nix` narrowed to this one's id.
 - The runner image is raised by hand. GitHub stops sending jobs to a runner version some weeks after a newer one is out, which shows as runners that are online and never get a job.
 - One token serves every repository, so they all belong to one owner.
+- Two runners take TableTab's gate, and two gates at once are more than the 4 vCPUs carry: both then fail their slowest tests on timeouts. A second entry in `repositories` with one runner and a label of its own, named by table-tab's `GATE_RUNNER_LABEL`, would keep it to one gate at a time.
 - Images and volumes stay between the jobs of one runner, so a job can leave a changed image or cache for the next one, until the night removes them.
 - A failed runner waits for the hourly check before it starts again.
 - Taking a runner down rests on GitHub refusing to delete the registration of a busy runner, which GitHub does not document as a guarantee. The look for a running job afterwards does not catch a job assigned in the same second.
