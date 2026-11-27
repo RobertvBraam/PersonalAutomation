@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Runs GitHub Actions jobs for the repositories listed in configuration.nix.
-# Each repository has an unprivileged user with a Docker daemon of its own, and
-# each runner takes one job in a fresh container on that daemon.
+# Each runner is an unprivileged user with a Docker daemon of its own, and
+# takes one job at a time in a fresh container on that daemon.
 #
 #   slot      one runner: register it with GitHub for one job and run it
 #   check     every hour: start the runners that failed and report that this
@@ -38,12 +38,19 @@ github() {
   return 1
 }
 
-# Points the docker client at the daemon of a repository's user.
+# Points the docker client at the daemon of a runner's user.
 use_daemon_of() {
   local uid
   uid="$(id -u "$1")" || fail "the user $1 does not exist."
   socket="/run/user/$uid/docker.sock"
   export DOCKER_HOST="unix://$socket"
+}
+
+# Removes every container of the daemon the docker client points at.
+remove_containers() {
+  local containers
+  mapfile -t containers < <(docker ps --all --quiet)
+  [ "${#containers[@]}" -eq 0 ] || docker rm --force "${containers[@]}" >/dev/null
 }
 
 wait_for_daemon() {
@@ -75,14 +82,15 @@ register() {
   export JITCONFIG
 }
 
-# The container ends with its job, and systemd then starts this again. The
-# workspace of the job before is removed first: it sits on a volume, next to
+# The container ends with its job, and systemd then starts this again. What the
+# job before left is removed first: its containers, since everything on this
+# daemon is this runner's, and its workspace, which sits on a volume next to
 # the caches that are meant to stay.
 run_one_job() {
   local volume mounts=() work="/_work/$RUNNER_NAME"
   use_daemon_of "$RUNNER_USER"
   wait_for_daemon
-  docker rm --force "$RUNNER_NAME" >/dev/null 2>&1 || true
+  remove_containers
   forget_registration
   register "$work"
   echo "$runner_id $REPOSITORY $RUNNER_USER" >"$RUNTIME_DIRECTORY/$RUNNER_NAME"
@@ -139,7 +147,7 @@ hourly_check() {
     send_span runner-server-check succeeded "The nightly maintenance is running."
     return
   fi
-  for unit in $SLOT_UNITS; do
+  for unit in $RUNNER_UNITS; do
     total=$((total + 1))
     if systemctl is-failed --quiet "$unit"; then
       systemctl reset-failed "$unit"
@@ -183,7 +191,7 @@ drain() {
   local deadline=$((SECONDS + $1 * 60)) unit busy
   while true; do
     busy=0
-    for unit in $SLOT_UNITS; do
+    for unit in $RUNNER_UNITS; do
       case "$(systemctl is-active "$unit" || true)" in
         active) take_down "$unit" || busy=$((busy + 1)) ;;
         activating) systemctl stop "$unit" ;;
@@ -195,13 +203,12 @@ drain() {
   done
 }
 
-# Removes every container, image and volume from every repository's daemon.
+# Removes every container, image and volume from every runner's daemon.
 wipe() {
-  local user containers
+  local user
   for user in $RUNNER_USERS; do
     use_daemon_of "$user"
-    mapfile -t containers < <(docker ps --all --quiet)
-    [ "${#containers[@]}" -eq 0 ] || docker rm --force "${containers[@]}" >/dev/null
+    remove_containers
     docker system prune --all --volumes --force >/dev/null
     docker volume prune --all --force >/dev/null
   done
@@ -212,7 +219,7 @@ nightly_maintenance() {
   flock 9
   if ! drain "$DRAIN_PATIENCE_MINUTES"; then
     # shellcheck disable=SC2086
-    systemctl start --no-block $SLOT_UNITS
+    systemctl start --no-block $RUNNER_UNITS
     fail "a job was still running after $DRAIN_PATIENCE_MINUTES minutes, so tonight's cleanup and reboot are skipped and the runners that were stopped are started again."
   fi
   wipe

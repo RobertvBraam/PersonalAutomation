@@ -7,12 +7,12 @@
 }:
 
 let
-  # The repositories this machine runs jobs for. Each gets an unprivileged user
-  # with a Docker daemon of its own and `count` runners, and every runner takes
-  # one job in a fresh container. `labels` are what a workflow's `runs-on` asks
-  # for. `volumes` are named volumes of that daemon, mounted in every runner of
-  # the repository: what a job should find again in the next one. The job's
-  # workspace is /_work/<runner>, removed before every job.
+  # The repositories this machine runs jobs for, each with `count` runners. A
+  # runner is an unprivileged user with a Docker daemon of its own, and takes
+  # one job at a time in a fresh container on that daemon. `labels` are what a
+  # workflow's `runs-on` asks for. `volumes` are named volumes of the runner's
+  # daemon: what a job should find again in the next one on that runner. The
+  # job's workspace is /_work/<runner>, removed before every job.
   repositories = {
     table-tab = {
       repository = "RobertvBraam/table-tab";
@@ -56,9 +56,15 @@ let
   # repository of another owner needs a token file of its own.
   tokenFile = "${persist}/token.env";
 
-  userOf = name: "runner-${name}";
-  slotsOf = name: cfg: map (number: "github-runner-${name}-${toString number}") (lib.range 1 cfg.count);
-  slotUnits = map (slot: "${slot}.service") (lib.concatLists (lib.mapAttrsToList slotsOf repositories));
+  # Every runner: its repository's entry plus a name of its own, table-tab-1.
+  runners = lib.concatLists (
+    lib.mapAttrsToList (
+      name: cfg: map (number: cfg // { name = "${name}-${toString number}"; }) (lib.range 1 cfg.count)
+    ) repositories
+  );
+  userOf = runner: "runner-${runner.name}";
+  unitOf = runner: "github-runner-${runner.name}";
+  runnerUnits = map (runner: "${unitOf runner}.service") runners;
 
   run = mode: "${pkgs.bash}/bin/bash ${./runner-server.sh} ${mode}";
   reportFailure = [ "runner-server-report@%N.service" ];
@@ -87,13 +93,13 @@ let
   # One runner. It ends with its job and starts again for the next one. A
   # changed definition is not applied under a running job: it takes effect when
   # the runner starts again.
-  slotService =
-    name: cfg: slot:
-    lib.nameValuePair slot (
+  runnerService =
+    runner:
+    lib.nameValuePair (unitOf runner) (
       lib.mkMerge [
         serverService
         {
-          description = "GitHub Actions runner for ${cfg.repository}, one job per container";
+          description = "GitHub Actions runner for ${runner.repository}, one job per container";
           wantedBy = [ "multi-user.target" ];
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
@@ -102,11 +108,11 @@ let
           startLimitIntervalSec = 0;
           unitConfig.RequiresMountsFor = persist;
           environment = {
-            REPOSITORY = cfg.repository;
-            RUNNER_USER = userOf name;
-            RUNNER_NAME = slot;
-            RUNNER_LABELS = lib.concatStringsSep "," cfg.labels;
-            RUNNER_VOLUMES = lib.concatStringsSep " " cfg.volumes;
+            REPOSITORY = runner.repository;
+            RUNNER_USER = userOf runner;
+            RUNNER_NAME = unitOf runner;
+            RUNNER_LABELS = lib.concatStringsSep "," runner.labels;
+            RUNNER_VOLUMES = lib.concatStringsSep " " runner.volumes;
             RUNNER_IMAGE = runnerImage;
           };
           serviceConfig = {
@@ -197,28 +203,40 @@ in
     };
   };
 
-  # A repository's jobs run as its own user and reach nothing of root's: not
-  # the token, not another repository's containers. The user's manager starts
-  # at boot (linger) and runs that user's Docker daemon.
-  # TODO: one daemon per repository, so a job can leave a container behind that
-  # reaches a later job of the same repository, until the night removes it. A
-  # daemon per runner would close that, at the price of an image store each.
-  users.groups = lib.mapAttrs' (name: _: lib.nameValuePair (userOf name) { }) repositories;
+  # A runner's jobs run as its own user and reach nothing of root's and nothing
+  # of another runner's: not the token, not its containers, not its ports. The
+  # user's manager starts at boot (linger) and runs that user's Docker daemon.
+  # A daemon per runner and not per repository, because a runner's container
+  # shares its daemon's network: two runners on one daemon would fight over the
+  # fixed ports TableTab's jobs listen on.
+  # TODO: images and volumes stay between the jobs of one runner, so a job can
+  # leave a changed image or cache for the next one, until the night removes
+  # them. Removing them after every job would close that, at the price of a
+  # pull and a cold cache per job.
+  users.groups = lib.listToAttrs (map (runner: lib.nameValuePair (userOf runner) { }) runners);
   users.users =
-    lib.mapAttrs' (
-      name: _:
-      lib.nameValuePair (userOf name) {
-        isSystemUser = true;
-        group = userOf name;
-        home = "/var/lib/${userOf name}";
-        createHome = true;
-        autoSubUidGidRange = true;
-        linger = true;
-      }
-    ) repositories
+    lib.listToAttrs (
+      map (
+        runner:
+        lib.nameValuePair (userOf runner) {
+          isSystemUser = true;
+          group = userOf runner;
+          home = "/var/lib/${userOf runner}";
+          createHome = true;
+          autoSubUidGidRange = true;
+          linger = true;
+        }
+      ) runners
+    )
     // {
       root.openssh.authorizedKeys.keyFiles = [ ./admin.pub ];
     };
+
+  # TODO: a daemon also forwards every port its containers publish to the
+  # server's own 127.0.0.1 (Docker's default without root). Two daemons that
+  # pick the same free port there may collide, which is not tried. A daemon
+  # that forwards nothing to the server would close that, once it is shown
+  # that a job still reaches its published ports.
   virtualisation.docker.rootless.enable = true;
 
   # What NixOS loads for a root Docker daemon. This machine has none, and a
@@ -257,11 +275,7 @@ in
   };
 
   systemd.services = lib.mkMerge [
-    (lib.listToAttrs (
-      lib.concatLists (
-        lib.mapAttrsToList (name: cfg: map (slotService name cfg) (slotsOf name cfg)) repositories
-      )
-    ))
+    (lib.listToAttrs (map runnerService runners))
     {
       nixos-upgrade = {
         onSuccess = [ "runner-server-maintenance.service" ];
@@ -274,7 +288,7 @@ in
           description = "Hourly check of the runners: start the failed ones, report a sign of life";
           startAt = "hourly";
           onFailure = reportFailure;
-          environment.SLOT_UNITS = lib.concatStringsSep " " slotUnits;
+          environment.RUNNER_UNITS = lib.concatStringsSep " " runnerUnits;
           serviceConfig = {
             Type = "oneshot";
             ExecStart = run "check";
@@ -292,8 +306,8 @@ in
             SuccessAction = "reboot";
           };
           environment = {
-            SLOT_UNITS = lib.concatStringsSep " " slotUnits;
-            RUNNER_USERS = lib.concatStringsSep " " (map userOf (lib.attrNames repositories));
+            RUNNER_UNITS = lib.concatStringsSep " " runnerUnits;
+            RUNNER_USERS = lib.concatStringsSep " " (map userOf runners);
             DRAIN_PATIENCE_MINUTES = toString drainPatienceMinutes;
           };
           serviceConfig = {
